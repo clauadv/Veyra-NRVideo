@@ -8,8 +8,10 @@
 #include <windows.h>
 #include <wrl/client.h>
 #include <array>
+#include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <cwchar>
 #include <filesystem>
 #include <format>
 #include <mutex>
@@ -27,9 +29,8 @@ using Microsoft::WRL::ComPtr;
 
 namespace {
 std::filesystem::path runtimeDirectory() { return runtime::applicationRoot() / "runtime" / "rife"; }
-// 2X takes the full RIFE 4.26; 3X the lite 4.22, which leaves more of the
-// 33 ms of a 30 fps pair for the rest of the graph (RX 9070 XT, 2026-11-22:
-// 11.4 vs 8.9 ms per frame at 1088x1920 fp16).
+// 2X keeps the full model; multiple subframes use the existing lite model.
+// 4X/5X are experimental: runtime cost must be measured on the user's GPU.
 std::string defaultModel(unsigned multiplier) { return multiplier > 2 ? "rife_v4.22_lite" : "rife_v4.26"; }
 std::string selectedModel(unsigned multiplier) {
     wchar_t value[64]{};
@@ -85,14 +86,15 @@ struct RifeDmlBackend::Impl {
     ID3D12Device* device = nullptr;
     ComPtr<IDMLDevice> dmlDevice;
     OrtSessionOptions* options = nullptr;
+    OrtRunOptions* runOptions = nullptr;
     OrtSession* session = nullptr;
     OrtMemoryInfo* memory = nullptr;
-    uint32_t width = 0, height = 0, pw = 0, ph = 0;
+    uint32_t width = 0, height = 0, inferW = 0, inferH = 0, pw = 0, ph = 0;
     unsigned multiplier = 2;
     DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
     std::string model;
     // planes[2]: the two most recent frames. times/outputs per timestep: k/multiplier
-    // for k = 1..multiplier-1, then 1/2 at 3X for pairs the owner reduces to 2X.
+    // for k = 1..multiplier-1, then 1/2 for pairs the owner reduces to 2X.
     struct Tensor { ComPtr<ID3D12Resource> buffer; void* allocation = nullptr; OrtValue* value = nullptr; };
     std::array<Tensor, 2> planes;
     std::vector<Tensor> times, outputs;
@@ -192,8 +194,16 @@ bool RifeDmlBackend::initialize(ID3D12Device* device, ID3D12CommandQueue* queue,
     p.rt = &runtime();
     if (!p.rt->api) { log::error("rife", "runtime unavailable: " + p.rt->error); return false; }
     if (format != DXGI_FORMAT_R8G8B8A8_UNORM) { log::error("rife", std::format("SDR colour only (format {})", int(format))); return false; }
-    if (multiplier < 2 || multiplier > 3) { log::error("rife", std::format("multiplier {} not supported (2X or 3X)", multiplier)); return false; }
-    p.device = device; p.width = width; p.height = height; p.pw = padded(width); p.ph = padded(height);
+    if (multiplier < 2 || multiplier > 5) { log::error("rife", std::format("multiplier {} not supported (2X through 5X)", multiplier)); return false; }
+    p.device = device; p.width = width; p.height = height;
+    // Optional inference scaling; output retains the source dimensions.
+    unsigned numerator=1,denominator=1;wchar_t scale[32]{};
+    if(GetEnvironmentVariableW(L"VEYRA_RIFE_INFERENCE_SCALE",scale,32)){
+        if(std::wcscmp(scale,L"0.666667")==0){numerator=2;denominator=3;}
+        else if(std::wcscmp(scale,L"1")!=0){log::error("rife","invalid inference scale");return false;}
+    }
+    p.inferW=std::max(1u,width*numerator/denominator);p.inferH=std::max(1u,height*numerator/denominator);
+    p.pw=padded(p.inferW);p.ph=padded(p.inferH);
     p.multiplier = multiplier; p.format = format; p.model = selectedModel(multiplier);
     const auto modelPath = runtimeDirectory() / (p.model + "_fp16.onnx");
     if (FAILED(p.rt->createDevice(device, DML_CREATE_DEVICE_FLAG_NONE, IID_PPV_ARGS(&p.dmlDevice)))) { log::error("rife", "DMLCreateDevice failed"); return false; }
@@ -210,6 +220,10 @@ bool RifeDmlBackend::initialize(ID3D12Device* device, ID3D12CommandQueue* queue,
         return false;
     const auto started = std::chrono::steady_clock::now();
     if (!p.check(api->CreateSession(p.rt->env, modelPath.c_str(), p.options, &p.session), "CreateSession")) return false;
+    // Same owner queue orders inference before unpack; retain GPU outputs
+    // until the owner's fence. Avoid a CPU synchronization per generated phase.
+    if (!p.check(api->CreateRunOptions(&p.runOptions), "CreateRunOptions") ||
+        !p.check(api->AddRunConfigEntry(p.runOptions, "disable_synchronize_execution_providers", "1"), "asynchronous Run")) return false;
     const double sessionMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
     if (!p.check(api->CreateMemoryInfo("DML", OrtDeviceAllocator, 0, OrtMemTypeDefault, &p.memory), "CreateMemoryInfo")) return false;
     for (auto& t : p.planes) if (!p.makeTensor(t, 3)) return false;
@@ -231,8 +245,8 @@ bool RifeDmlBackend::initialize(ID3D12Device* device, ID3D12CommandQueue* queue,
     if (!p.input) return false;
     p.inputState = D3D12_RESOURCE_STATE_COMMON;
     std::vector<uint8_t> cs;
-    if (!p.pack.loadShader("RifePack.dxil", cs) || !p.pack.create(device, cs, 4 + p.steps(), 1, 1) ||
-        !p.unpack.loadShader("RifeUnpack.dxil", cs) || !p.unpack.create(device, cs, 1 + 2 * 3 * 8, 1, 2) ||
+    if (!p.pack.loadShader("RifePack.dxil", cs) || !p.pack.create(device, cs, 4 + p.steps(), 1, 1, 8, 0, true) ||
+        !p.unpack.loadShader("RifeUnpack.dxil", cs) || !p.unpack.create(device, cs, 1 + 2 * p.steps() * 8, 1, 2) ||
         !p.shot.loadShader("RifeShotChange.dxil", cs) || !p.shot.create(device, cs, 7, 1, 3, 8))
         return false;
     {
@@ -266,7 +280,7 @@ bool RifeDmlBackend::initialize(ID3D12Device* device, ID3D12CommandQueue* queue,
     device->CreateShaderResourceView(nullptr, &nullSrv, p.cpu(p.shot, 0));
     for (unsigned i = 0; i < p.times.size(); ++i) p.rawUav(p.times[i].buffer.Get(), 1, p.cpu(p.pack, 4 + i));
     p.ok = true;
-    log::info("rife", std::format("ready model={} {}x{} tensor {}x{} {}X session={:.0f} ms", p.model, width, height, p.pw, p.ph, multiplier, sessionMs));
+    log::info("rife", std::format("ready model={} {}x{} inference {}x{} tensor {}x{} {}X session={:.0f} ms", p.model, width, height, p.inferW,p.inferH,p.pw, p.ph, multiplier, sessionMs));
     return true;
 }
 
@@ -286,7 +300,7 @@ bool RifeDmlBackend::capture(ID3D12GraphicsCommandList* list, ID3D12Resource* co
     list->CopyResource(p.input.Get(), color);
     barrier(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     const unsigned next = 1 - p.current;
-    const uint32_t c[8] = {p.width, p.height, p.pw, p.ph, 0, 0, 0, 0};
+    const uint32_t c[8] = {p.width, p.height, p.pw, p.ph, 0, 0, p.inferW, p.inferH};
     p.dispatch(list, p.pack, c, p.gpu(p.pack, 0), p.gpu(p.pack, 1 + next), p.pw, p.ph);
     if (!p.timesFilled) {
         for (unsigned s = 0; s < p.steps(); ++s) {
@@ -308,7 +322,7 @@ bool RifeDmlBackend::capture(ID3D12GraphicsCommandList* list, ID3D12Resource* co
     D3D12_RESOURCE_BARRIER workWritten{};
     workWritten.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV; workWritten.UAV.pResource = p.work.Get();
     for (uint32_t mode = 0; mode < 3; ++mode) {
-        uint32_t sc[8] = {p.width, p.height, p.pw, p.ph, mode, next, p.haveFrame ? 1u : 0u, 0};
+        uint32_t sc[8] = {p.inferW, p.inferH, p.pw, p.ph, mode, next, p.haveFrame ? 1u : 0u, 0};
         std::memcpy(&sc[7], &threshold, 4);
         p.shot.bind(list, reinterpret_cast<const float*>(sc), p.gpu(p.shot, 0).ptr, p.gpu(p.shot, 1 + next * 3).ptr);
         // mode 1 needs both luma pictures; on a first frame it still runs, compare=0 discards it.
@@ -326,7 +340,7 @@ bool RifeDmlBackend::generate(unsigned sub, unsigned of) {
     auto& p = *p_;
     const int s = p.step(sub, of);
     if (!p.ok || !p.havePrevious || s < 0) return false;
-    return p.check(p.rt->api->RunWithBinding(p.session, nullptr, p.bindings[p.current * p.steps() + unsigned(s)]), "RunWithBinding");
+    return p.check(p.rt->api->RunWithBinding(p.session, p.runOptions, p.bindings[p.current * p.steps() + unsigned(s)]), "RunWithBinding");
 }
 
 bool RifeDmlBackend::copyOutput(ID3D12GraphicsCommandList* list, ID3D12Resource* output, unsigned sub, unsigned of) {
@@ -344,13 +358,13 @@ bool RifeDmlBackend::copyOutput(ID3D12GraphicsCommandList* list, ID3D12Resource*
         p.outputSlots.emplace(key, index);
         slot = index;
         for (unsigned k = 0; k < p.steps(); ++k) {
-            const UINT base = 1 + (slot * 3 + k) * 2;
+            const UINT base = 1 + (slot * p.steps() + k) * 2;
             p.rawUav(p.outputs[k].buffer.Get(), 3, p.cpu(p.unpack, base));
             pipeline::makeUav(p.device, output, p.format, p.cpu(p.unpack, base + 1));
         }
     } else slot = it->second;
-    const UINT base = 1 + (slot * 3 + unsigned(s)) * 2;
-    const uint32_t c[8] = {p.width, p.height, p.pw, p.ph, 0, 0, 0, 0};
+    const UINT base = 1 + (slot * p.steps() + unsigned(s)) * 2;
+    const uint32_t c[8] = {p.width, p.height, p.pw, p.ph, p.inferW, p.inferH, 0, 0};
     // Across a shot change the network would morph two unrelated pictures: the
     // conversion is skipped and the subframe shows the new frame instead.
     list->SetPredication(p.cut.Get(), 0, D3D12_PREDICATION_OP_NOT_EQUAL_ZERO);   // skipped on a cut
@@ -381,6 +395,7 @@ void RifeDmlBackend::shutdown() {
     for (auto& t : p.times) p.release(t);
     for (auto& t : p.outputs) p.release(t);
     if (p.session) api->ReleaseSession(p.session);
+    if (p.runOptions) api->ReleaseRunOptions(p.runOptions);
     if (p.options) api->ReleaseSessionOptions(p.options);
     if (p.memory) api->ReleaseMemoryInfo(p.memory);
     const Runtime* rt = p.rt;

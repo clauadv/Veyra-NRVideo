@@ -68,6 +68,7 @@ constexpr bool presentSinkFrameGeneration(FrameGenerationBackend backend) {
 // Multipliers the UI offers. 5X is intentionally absent: the DLSS runtime
 // exposes 2/3/4/6 and MFG buyers pick from those; 1 = generation off.
 inline constexpr uint32_t kFgMultiplierChoices[]={1,2,3,4,6};
+inline constexpr uint32_t kRifeMultiplierChoices[]={1,2,3,4,5};
 inline constexpr uint32_t kAnrMultiplierChoices[]={1,2,3,4,5,6};
 inline constexpr uint32_t kVfgMultiplierChoices[]={1,2,3,4,5,6,7,8};
 // VFG quality: 0-2 run one NvVFX model (Low/Medium/High) for every subframe.
@@ -761,7 +762,7 @@ struct EnhancementSettings {
         // probe measured the same count for 2/3/4 requested frames.
         if(fsrFrameGeneration(frameGenerationBackend)&&multiplier>2)return "AMD FSR frame generation supports up to 2X";
         if(frameGenerationBackend==FrameGenerationBackend::AmdFrc&&multiplier>2)return "AMD FRC supports 2X only";
-        if(frameGenerationBackend==FrameGenerationBackend::Rife&&multiplier>3)return "RIFE supports 2X and 3X";
+        if(frameGenerationBackend==FrameGenerationBackend::Rife&&multiplier>5)return "RIFE supports 2X through 5X";
         if(!validVideoSrQuality(videoSrQuality))return "invalid video SR quality";
         if(dlssSrModel>=kDlssSrModelCount)return "invalid DLSS SR model";
         if(!pipeline::validSrTarget(srTarget))return "invalid SR target";

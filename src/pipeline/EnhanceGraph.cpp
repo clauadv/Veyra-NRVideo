@@ -1800,7 +1800,18 @@ void EnhanceGraph::composeHudProtect(ID3D12GraphicsCommandList* list,unsigned sl
 
 bool EnhanceGraph::initHudLock() {
     hudLock_.reset();
+    rifeHudLock_.reset();
     if((!desc_.hudLock&&!desc_.dynamicHud)||!fgEnabled_||presentSinkFg())return true;
+    if(desc_.frameGenerationBackend==engine::FrameGenerationBackend::Rife){
+        auto pass=std::make_unique<RifeHudLock>();
+        if(!pass->initialize(context_.device(),workW_,workH_,outputFormat(),
+                             hdr10Output()?2u:desc_.hdrOutput?1u:0u,desc_.hudLock,desc_.dynamicHud)){
+            veyra::log::error("rife-hud",std::format("RIFE HUD protection unavailable at {}x{}; frame generation runs without it",workW_,workH_));
+            return true;
+        }
+        rifeHudLock_=std::move(pass);
+        return true;
+    }
     auto pass=std::make_unique<HudLock>();
     if(!pass->initialize(context_.device(),workW_,workH_,outputFormat(),
                          hdr10Output()?2u:desc_.hdrOutput?1u:0u,desc_.hudLock,desc_.dynamicHud)){
@@ -1811,6 +1822,11 @@ bool EnhanceGraph::initHudLock() {
     return true;
 }
 void EnhanceGraph::composeHudLock(ID3D12GraphicsCommandList* list,unsigned generatedSlot,unsigned heldParity,bool useNewerHud){
+    if(rifeHudLock_){
+        if(!rifeHudLock_->compose(list,tracker_,generatedSlot,heldParity,useNewerHud))
+            veyra::log::warn("rife-hud",std::format("compose skipped slot={} held={}",generatedSlot,heldParity));
+        return;
+    }
     if(hudLock_&&!hudLock_->compose(list,tracker_,generatedSlot,heldParity,useNewerHud))
         veyra::log::warn("hud-lock",std::format("compose skipped slot={} held={}",generatedSlot,heldParity));
 }
@@ -2556,11 +2572,12 @@ bool EnhanceGraph::createViews()
 {
     bindSignedHdrRestore(firstSrHdrRestore_,srStageInput(),firstSrLinear_.Get());
     bindSignedHdrRestore(srHdrRestore_,desc_.dualSr?srPrescaled_.Get():srStageInput(),workRgba_.Get());
-    if(hudLock_||hudProtect_){
+    if(hudLock_||rifeHudLock_||hudProtect_){
         ID3D12Resource* const real[2]={videoFrame_[0].Get(),videoFrame_[1].Get()};
         std::array<ID3D12Resource*,kGeneratedPoolSlots> generated{};
         for(size_t i=0;i<kGeneratedPoolSlots;++i)generated[i]=genFrame_[i].Get();
         if(hudLock_)hudLock_->createViews(context_.device(),stager_,real,generated.data(),unsigned(generated.size()));
+        if(rifeHudLock_)rifeHudLock_->createViews(context_.device(),stager_,real,generated.data(),unsigned(generated.size()));
         if(hudProtect_)hudProtect_->createViews(context_.device(),stager_,real,generated.data(),
             desc_.fgUsesFlow()?(flowRefine_?fgBaseFlow_.Get():baseFlow_.Get()):nullptr);
     }
@@ -4641,6 +4658,7 @@ bool EnhanceGraph::process(const AVFrame* frame, double ptsMs, bool reset, Frame
     composeExclusion(list,parity,parity,exclusionUi_[parity]!=nullptr,!reset&&prevValid_);
     // Live HUD Lock learns from this real frame against the previous one (enhanced colours).
     if(hudLock_&&!hudLock_->update(list,tracker_,parity,!prevValid_))veyra::log::warn("hud-lock","update skipped");
+    if(rifeHudLock_&&!rifeHudLock_->update(list,tracker_,parity,!prevValid_))veyra::log::warn("rife-hud","update skipped");
     if(!runFg)gpuTimer_.resolve(list);
     if (!submitGraph(slot)) return false;
     if(hudProtect_)hudProtect_->submitted(ring_->lastSignaledValue());
@@ -5330,6 +5348,7 @@ void EnhanceGraph::shutdown()
     exclusionPass_={};exclusionScratch_.Reset();
     hudProtect_.reset();
     hudLock_.reset();
+    rifeHudLock_.reset();
     for(auto& r:exclusionVideo_)r.Reset();
     for(auto& r:exclusionUi_)r.Reset();
     for(auto& r:sourceReferences_)r.Reset();for(auto& r:baseReferences_)r.Reset();workRgba_.Reset();

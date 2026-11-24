@@ -3,7 +3,7 @@
 `FrameGenerationBackend::Rife` interpolates with RIFE (Practical-RIFE, MIT) through
 ONNX Runtime's DirectML provider on the graph's own D3D12 queue. It is meant for
 GPUs without NVIDIA VFG (AMD, Intel): it estimates motion from the two pictures
-only, like VFG and AMD FRC, and offers 2X and 3X.
+only, like VFG and AMD FRC, and offers 2X and 3X, plus experimental 4X/5X.
 
 ## Runtime (not bundled)
 
@@ -27,15 +27,22 @@ points at the two extracted NuGet packages (`ort/build/native/include`,
   one network run with timestep k/n and a conversion back. All on one queue in
   submission order; ONNX Runtime only records and submits (0.3 ms of CPU per run),
   no CPU fence waits.
-- 2X runs RIFE 4.26; 3X runs 4.22 lite, which leaves room in a 30 fps pair.
+- 2X runs RIFE 4.26; 3X–5X default to 4.22 lite. Higher multipliers may exceed
+  the source-frame time budget.
   `VEYRA_TEST_RIFE_MODEL` overrides the model for tests.
+- `VEYRA_RIFE_INFERENCE_SCALE=0.666667` reduces inference resolution to two
+  thirds of the input size and upscales generated frames to the output size.
+  The default is full-resolution inference.
+- HUD Lock protects RIFE subtitles, menu portraits and colored meter edges
+  using nearby real frames. It applies to SDR output while HUD Lock is enabled.
+  RIFE uses separate HUD passes; other backends retain the standard HUD Lock.
 - Shot changes: a motion-compensated block match on a 128x72 luma picture
   (median best-match error > 0.07). Across a cut the subframes show the new frame.
   The histogram/SAD test of VFG did not separate cuts inside one game location
   from fast camera turns on console capture.
 - SDR output only (R8G8B8A8); other formats fail initialization and turn FG off.
 
-## Measurements (RX 9070 XT, Adrenalin, PS5 1080p through Elgato 4K S, 2026-11-22)
+## Historical measurements (RX 9070 XT, Adrenalin, PS5 1080p through Elgato 4K S, 2026-11-22)
 
 Quality: a 30 fps GTA capture with every other frame dropped (15 fps in), each
 generated frame compared with the real frame it replaces (960x540 luma PSNR).

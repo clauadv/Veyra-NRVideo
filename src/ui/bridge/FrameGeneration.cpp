@@ -25,7 +25,7 @@ QVariantList QmlPlayerBridge::fgBackendChoices() const {
         QVariantMap{{"id","fsr3"},{"label",tr("FSR 3.1 · 2X")}},
         QVariantMap{{"id","fsr4"},{"label",tr("FSR 4 ML · RX 9000")}},
         QVariantMap{{"id","amdfrc"},{"label",tr("AMD FRC · 视频补帧 · 2X")}},
-        QVariantMap{{"id","rife"},{"label",tr("RIFE · AI 视频补帧 · 2X / 3X")}},
+        QVariantMap{{"id","rife"},{"label",tr("RIFE · AI interpolation · 2X / 3X · 4X / 5X (experimental)")}},
         QVariantMap{{"id","vfg"},{"label",tr("NVIDIA VFG 👑（顶级补帧质量） · RTX 30（实验）/ 40 / 50")},{"gold",true}}
     };
     const auto caps = effectCapabilities();
@@ -51,7 +51,7 @@ QString QmlPlayerBridge::fgProviderText() const {
     }
     if(engine::fsrFrameGeneration(s.applied.frameGenerationBackend)&&s.applied.multiplier>1&&!s.fsrProviderVersion.empty())
         return tr("实际运行：FSR %1 · 2X").arg(QString::fromStdString(s.fsrProviderVersion));
-    if(fgBackendName()==QLatin1String("rife"))return tr("RIFE 4.26（3X 用 4.22 lite）AI 视频补帧，经 DirectML 在任意 DirectX 12 显卡上运行，只用前后两帧画面；比 AMD FRC 清晰，但 GPU 占用更高、延迟略高");
+    if(fgBackendName()==QLatin1String("rife"))return tr("AI frame interpolation. 4X and 5X are experimental and require more GPU time; the usable rate depends on the scene.");
     if(fgBackendName()==QLatin1String("amdfrc"))return tr("AMD 驱动自带的视频补帧（AMF FRC），只用前后两帧画面估算运动，固定 2X");
     if(fgBackendName()==QLatin1String("fsr4"))return tr("FSR 4 ML 需要支持的 RX 9000 和驱动，不可用时自动改用 FSR 3.1；尚未在 RX 9000 实卡上验证");
     if(fgBackendName()==QLatin1String("fsr3"))return tr("FSR 3.1 跨厂商补帧 · 最高 2X");
@@ -105,7 +105,7 @@ void QmlPlayerBridge::setFgBackendName(const QString& value) {
     auto& chain = impl_->chain;
     const auto beforeMultiplier = chain.fgMultiplier;
     const int cap = want == engine::FrameGenerationBackend::XeSS ? xessCeiling(impl_->snapshot)
-                  : engine::twoXFrameGeneration(want) ? 2 : want==engine::FrameGenerationBackend::Rife ? 3 : want==engine::FrameGenerationBackend::Vfg?8:6;
+                  : engine::twoXFrameGeneration(want) ? 2 : want==engine::FrameGenerationBackend::Rife ? 5 : want==engine::FrameGenerationBackend::Vfg?8:6;
     chain.fgMultiplier=normalizeFgMultiplier(chain.fgMultiplier,want,uint32_t(cap));
     const bool clamped = chain.fgMultiplier != beforeMultiplier;
     if(!impl_->commit(s)){
@@ -128,7 +128,7 @@ int QmlPlayerBridge::fgMaxMultiplier() const {
         return s.applied.frameGenerationBackend==engine::FrameGenerationBackend::Anr&&s.fgCapabilityKnown&&s.fgMultiFrameMax>0?std::clamp(s.fgMultiFrameMax+1,2,6):6;
     if(settings().frameGenerationBackend==engine::FrameGenerationBackend::Vfg)return 8;
     if(engine::twoXFrameGeneration(settings().frameGenerationBackend))return 2;
-    if(settings().frameGenerationBackend==engine::FrameGenerationBackend::Rife)return 3;
+    if(settings().frameGenerationBackend==engine::FrameGenerationBackend::Rife)return 5;
     if (settings().frameGenerationBackend == engine::FrameGenerationBackend::XeSS)
         return xessCeiling(s);
     if (s.fgCapabilityKnown && s.fgMultiFrameMax > 0) return std::clamp(s.fgMultiFrameMax + 1, 2, 6);
@@ -144,7 +144,7 @@ QVariantList QmlPlayerBridge::fgMultiplierChoices() const {
     const int ceiling = xess ? std::min(fgMaxMultiplier(), 4) : fgMaxMultiplier();
     QVariantList out;
     const auto choices=settings().frameGenerationBackend==engine::FrameGenerationBackend::Vfg?
-        std::span<const uint32_t>(engine::kVfgMultiplierChoices):settings().frameGenerationBackend==engine::FrameGenerationBackend::Anr?std::span<const uint32_t>(engine::kAnrMultiplierChoices):std::span<const uint32_t>(engine::kFgMultiplierChoices);
+        std::span<const uint32_t>(engine::kVfgMultiplierChoices):settings().frameGenerationBackend==engine::FrameGenerationBackend::Anr?std::span<const uint32_t>(engine::kAnrMultiplierChoices):settings().frameGenerationBackend==engine::FrameGenerationBackend::Rife?std::span<const uint32_t>(engine::kRifeMultiplierChoices):std::span<const uint32_t>(engine::kFgMultiplierChoices);
     for (const auto choice : choices) {
         const int m = int(choice);
         if (m < 2 || m > ceiling) continue;
@@ -570,7 +570,7 @@ void QmlPlayerBridge::setFgAutoMultiplier(bool value) {
 
 void QmlPlayerBridge::applyFgMultiplier(int multiplier) {
     const auto choices=settings().frameGenerationBackend==engine::FrameGenerationBackend::Vfg?
-        std::span<const uint32_t>(engine::kVfgMultiplierChoices):std::span<const uint32_t>(engine::kFgMultiplierChoices);
+        std::span<const uint32_t>(engine::kVfgMultiplierChoices):settings().frameGenerationBackend==engine::FrameGenerationBackend::Rife?std::span<const uint32_t>(engine::kRifeMultiplierChoices):std::span<const uint32_t>(engine::kFgMultiplierChoices);
     const bool legal = std::find(choices.begin(),choices.end(),uint32_t(std::max(multiplier,0)))!=choices.end();
     if (!legal || multiplier > fgMaxMultiplier()) {
         emit notice(tr("补帧倍率超出当前后端范围"), true); return;

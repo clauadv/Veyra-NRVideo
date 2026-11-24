@@ -41,7 +41,10 @@ static const int kRangeX = 12;
 static const int kRangeY = 6;
 static const uint kWindowW = kBlockW + 2 * kRangeX;   // 40
 static const uint kWindowH = kBlockH + 2 * kRangeY;   // 30
-static const uint kCandidates = (kRangeX + 1) * (kRangeY + 1);   // steps of 2: 13 x 7
+// A 16-pixel 1080p pan is about one luma pixel. Skipping odd displacements
+// misclassifies textured continuous motion as a cut. Keep the same threshold
+// and window, evaluating every integer displacement in two thread iterations.
+static const uint kCandidates = (2 * kRangeX + 1) * (2 * kRangeY + 1);
 
 groupshared float blockA[kBlockW * kBlockH];
 groupshared float windowB[kWindowW * kWindowH];
@@ -80,15 +83,15 @@ void main(uint3 group : SV_GroupID, uint index : SV_GroupIndex)
         }
         GroupMemoryBarrierWithGroupSync();
         float error = 1e9;
-        if (index < kCandidates) {
-            const int dx = -kRangeX + 2 * int(index % (kRangeX + 1)), dy = -kRangeY + 2 * int(index / (kRangeX + 1));
+        for (uint c = index; c < kCandidates; c += 256) {
+            const int dx = -kRangeX + int(c % (2 * kRangeX + 1)), dy = -kRangeY + int(c / (2 * kRangeX + 1));
             if (int(bx) + dx >= 0 && int(by) + dy >= 0 && int(bx) + dx + int(kBlockW) <= int(kW) && int(by) + dy + int(kBlockH) <= int(kH)) {
                 float sad = 0;
                 for (uint k = 0; k < kBlockW * kBlockH; ++k) {
                     const uint kx = k % kBlockW, ky = k / kBlockW;
                     sad += abs(blockA[k] - windowB[(uint(dy + kRangeY) + ky) * kWindowW + uint(dx + kRangeX) + kx]);
                 }
-                error = sad / float(kBlockW * kBlockH);
+                error = min(error, sad / float(kBlockW * kBlockH));
             }
         }
         candidate[index] = error;

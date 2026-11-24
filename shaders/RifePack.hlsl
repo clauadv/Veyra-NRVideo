@@ -16,6 +16,7 @@ cbuffer Constants : register(b0)
 };
 
 Texture2D<float4> color : register(t0);
+SamplerState linearClamp : register(s1);
 RWByteAddressBuffer planes : register(u0);
 
 [numthreads(16, 16, 1)]
@@ -28,7 +29,15 @@ void main(uint3 id : SV_DispatchThreadID)
         for (uint c = 0; c < planeCount; ++c) planes.Store((c * plane + index) * 4, asuint(value));
         return;
     }
-    const float3 rgb = saturate(color.Load(int3(min(id.x, width - 1), min(id.y, height - 1), 0)).rgb);
+    // In colour mode planeCount/pad0 carry the active inference extent.
+    float3 rgb;
+    if(planeCount==width&&pad0==height)
+        rgb=color.Load(int3(min(id.x,width-1),min(id.y,height-1),0)).rgb;
+    else{
+        float2 source=(float2(min(id.x,planeCount-1),min(id.y,pad0-1))+.5)/float2(planeCount,pad0);
+        rgb=color.SampleLevel(linearClamp,source,0).rgb;
+    }
+    rgb=saturate(rgb);
     planes.Store((0 * plane + index) * 4, asuint(rgb.r));
     planes.Store((1 * plane + index) * 4, asuint(rgb.g));
     planes.Store((2 * plane + index) * 4, asuint(rgb.b));

@@ -7,6 +7,7 @@
 #include "veyra/pipeline/AntiAliasPass.h"
 #include "veyra/pipeline/BeautyPass.h"
 #include "veyra/pipeline/HudLock.h"
+#include "veyra/pipeline/RifeHudLock.h"
 #include "veyra/beauty/FaceTracker.h"
 #include "veyra/pipeline/NrInstance.h"
 #include "veyra/pipeline/ResolutionPlan.h"
@@ -792,11 +793,11 @@ public:
     bool highQualityPresentation() const { return desc_.highQualityPresentation; }
     // Live HUD Lock: 0 off, 1 running, 2 asked for but its passes could not be created,
     // 3 asked for with a frame generation that presents on its own (XeSS) or none.
-    int hudLockState() const { if(!desc_.hudLock)return 0; if(hudLock_)return 1; if(!fgEnabled_||presentSinkFg())return 3; return 2; }
+    int hudLockState() const { if(!desc_.hudLock)return 0; if(hudLock_||rifeHudLock_)return 1; if(!fgEnabled_||presentSinkFg())return 3; return 2; }
     int dynamicHudState() const {
         if (!desc_.dynamicHud) return 0;
         if (!fgEnabled_ || presentSinkFg()) return 3;
-        return hudLock_ && hudLock_->dynamicActive() ? 1 : 2;
+        return (hudLock_ && hudLock_->dynamicActive()) || (rifeHudLock_ && rifeHudLock_->dynamicActive()) ? 1 : 2;
     }
     bool xessEnabled() const { return desc_.enableFg && !desc_.noFeatures && !desc_.stillImage && desc_.frameGenerationBackend==engine::FrameGenerationBackend::XeSS; }
     bool fsrEnabled() const { return desc_.enableFg && !desc_.noFeatures && !desc_.stillImage && engine::fsrFrameGeneration(desc_.frameGenerationBackend); }
@@ -1228,6 +1229,7 @@ private:
     std::unique_ptr<gfx::AmfFrcBackend> amfFrc_;
     std::unique_ptr<gfx::RifeDmlBackend> rife_;
     std::unique_ptr<HudLock> hudLock_;  // Live HUD Lock (from PushFPS)
+    std::unique_ptr<RifeHudLock> rifeHudLock_;
     bool initHudLock();
     std::unique_ptr<HudProtect> hudProtect_;
     bool initHudProtect();

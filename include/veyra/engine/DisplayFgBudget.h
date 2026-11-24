@@ -37,7 +37,7 @@ constexpr bool displayFgMultiplierSelectable(FrameGenerationBackend backend,unsi
     case FrameGenerationBackend::Fsr:
     case FrameGenerationBackend::Fsr4:
     case FrameGenerationBackend::AmdFrc: return multiplier==2;
-    case FrameGenerationBackend::Rife: return multiplier==2||multiplier==3;
+    case FrameGenerationBackend::Rife: return multiplier>=2&&multiplier<=5;
     }
     return false;
 }

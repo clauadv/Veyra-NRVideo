@@ -1003,13 +1003,14 @@ int main(){
                 "RIFE is not 2X-only, not FSR, and not NVIDIA-only");
             check(!engine::motionUsesFlow(engine::MotionSource::OpticalFlow,F::Rife)&&!engine::motionUsesFlow(engine::MotionSource::Automatic,F::Rife),
                 "RIFE estimates its own motion (no optical-flow session)");
-            check(engine::displayFgMultiplierSelectable(F::Rife,2)&&engine::displayFgMultiplierSelectable(F::Rife,3)&&!engine::displayFgMultiplierSelectable(F::Rife,4),
-                "RIFE offers 2X and 3X");
+            check(engine::displayFgMultiplierSelectable(F::Rife,2)&&engine::displayFgMultiplierSelectable(F::Rife,3)&&engine::displayFgMultiplierSelectable(F::Rife,4)&&engine::displayFgMultiplierSelectable(F::Rife,5)&&!engine::displayFgMultiplierSelectable(F::Rife,6),
+                "RIFE offers 2X through 5X and rejects 6X");
             check(engine::exportFrameGenerationSupported(F::Rife,false),"RIFE writes graph textures, so export can use it");
             check(engine::frameGenerationBackendName(F::Rife)=="RIFE","RIFE name");
             engine::EnhancementSettings rifeSettings;rifeSettings.frameGenerationBackend=F::Rife;rifeSettings.multiplier=3;
             check(rifeSettings.validate().empty(),"RIFE 3X settings are valid");
-            rifeSettings.multiplier=4;check(!rifeSettings.validate().empty(),"RIFE above 3X is invalid");
+            rifeSettings.multiplier=5;check(rifeSettings.validate().empty(),"RIFE 5X settings are valid");
+            rifeSettings.multiplier=6;check(!rifeSettings.validate().empty(),"RIFE above 5X is invalid");
             rifeSettings.multiplier=3;engine::EnhancementSettings rifeFailed=rifeSettings;
             check(engine::disableFailedBackend(rifeFailed,engine::FailedBackend::Fg)&&rifeFailed.multiplier==1&&rifeFailed.frameGenerationBackend==F::Rife,
                 "a failing RIFE turns frame generation off and keeps the choice");

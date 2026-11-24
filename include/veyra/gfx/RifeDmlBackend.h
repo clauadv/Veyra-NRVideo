@@ -16,7 +16,7 @@ namespace veyra::gfx {
 // for each subframe generate() queues the network on the same queue (no CPU
 // wait: ONNX Runtime only records and submits) and copyOutput() records the
 // conversion of its result into the owner's texture. Queue order alone orders
-// the three steps. 2X and 3X: subframe k of n is the frame at time k/n.
+// the three steps. Subframe k of n is the frame at time k/n; 4X/5X are experimental.
 class RifeDmlBackend {
 public:
     RifeDmlBackend();
@@ -25,7 +25,7 @@ public:
     RifeDmlBackend& operator=(const RifeDmlBackend&) = delete;
     // runtime\rife holds the runtime DLLs and the model (file checks only).
     static bool runtimeInstalled();
-    // SDR colour only (R8G8B8A8_UNORM); multiplier 2 or 3.
+    // SDR colour only (R8G8B8A8_UNORM); multiplier 2..5.
     bool initialize(ID3D12Device*, ID3D12CommandQueue*, uint32_t width, uint32_t height, DXGI_FORMAT, unsigned multiplier);
     // `color` is in COPY_SOURCE; the list runs on the queue given to initialize().
     bool capture(ID3D12GraphicsCommandList*, ID3D12Resource* color);
